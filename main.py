@@ -8,6 +8,7 @@ from typing import Optional
 
 app = FastAPI()
 
+# Разрешаем запросы с расширения
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,10 +16,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# База данных
+# Подключаем БД
 conn = sqlite3.connect("data.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# Таблица для событий
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,6 +33,7 @@ cursor.execute("""
     )
 """)
 
+# Таблица для команд
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS commands (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,7 +45,7 @@ cursor.execute("""
 """)
 conn.commit()
 
-# ===== API ЭНДПОИНТЫ =====
+# ===== ЭНДПОИНТЫ =====
 
 @app.get("/ping")
 async def ping():
@@ -69,11 +72,8 @@ async def add_event(request: Request):
         return {"status": "error", "message": str(e)}
 
 @app.get("/events")
-async def get_events(limit: int = 100, event_type: Optional[str] = None):
-    if event_type:
-        cursor.execute("SELECT * FROM events WHERE event_type = ? ORDER BY id DESC LIMIT ?", (event_type, limit))
-    else:
-        cursor.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
+async def get_events(limit: int = 100):
+    cursor.execute("SELECT * FROM events ORDER BY id DESC LIMIT ?", (limit,))
     rows = cursor.fetchall()
     return {
         "events": [
@@ -90,19 +90,24 @@ async def get_events(limit: int = 100, event_type: Optional[str] = None):
         ]
     }
 
-# ===== КОМАНДЫ (с удалением после получения) =====
+# ===== КОМАНДЫ =====
 
 @app.get("/commands")
 async def get_commands():
-    """Получить все активные команды (с ID)"""
+    """Получить все активные команды"""
     cursor.execute("SELECT id, action, params FROM commands WHERE is_active = 1 ORDER BY id ASC")
     rows = cursor.fetchall()
     commands = []
     for row in rows:
         cmd = {"id": row[0], "action": row[1]}
         if row[2]:
-            cmd.update(json.loads(row[2]))
+            try:
+                params = json.loads(row[2])
+                cmd.update(params)
+            except:
+                pass
         commands.append(cmd)
+    print(f"📟 Возвращаем команды: {commands}")  # Лог для отладки
     return commands
 
 @app.post("/commands")
@@ -119,6 +124,7 @@ async def add_command(request: Request):
         1
     ))
     conn.commit()
+    print(f"✅ Добавлена команда: {data}")  # Лог для отладки
     return {"status": "ok", "id": cursor.lastrowid}
 
 @app.delete("/commands/{command_id}")
@@ -126,9 +132,8 @@ async def delete_command(command_id: int):
     """Удалить выполненную команду"""
     cursor.execute("DELETE FROM commands WHERE id = ?", (command_id,))
     conn.commit()
+    print(f"🗑️ Удалена команда ID: {command_id}")  # Лог для отладки
     return {"status": "ok", "deleted": cursor.rowcount}
-
-# ===== ОЧИСТКА ВСЕХ КОМАНД (для админки) =====
 
 @app.delete("/commands")
 async def delete_all_commands():
@@ -166,10 +171,10 @@ async def admin():
             'install': '🎉', 'update': '🔄', 'chat_usage': '💬', 
             'auto_answer': '🤖', 'error': '⚠️'
         }.get(stat[0], '📌')
-        stats_html += f'<div class="stat"><span class="stat-emoji">{emoji}</span> {stat[0]}: <strong>{stat[1]}</strong></div>'
+        stats_html += f'<div class="stat">{emoji} {stat[0]}: <strong>{stat[1]}</strong></div>'
     
     if stats_html == "":
-        stats_html = '<div class="stat" style="background: #2a2a2a;">📭 Нет событий</div>'
+        stats_html = '<div class="stat">📭 Нет событий</div>'
     
     events_html = ""
     if len(rows) == 0:
@@ -180,7 +185,7 @@ async def admin():
             <tr>
                 <td>{row[0]}</td>
                 <td>{row[1][:19]}</td>
-                <td><span class="type-{row[2]}">{row[2]}</span></td>
+                <td>{row[2]}</td>
                 <td>{row[3][:25] if row[3] else '-'}</td>
                 <td>{row[5][:50] if row[5] else '-'}</td>
                 <td>{row[4][:50] if row[4] else '-'}</td>
@@ -189,7 +194,7 @@ async def admin():
     
     commands_html = ""
     if len(commands_rows) == 0:
-        commands_html = '<div class="stat" style="background: #2a2a2a;">📭 Нет активных команд</div>'
+        commands_html = '<div style="color: #888;">📭 Нет активных команд</div>'
     else:
         commands_html = '<ul style="margin: 0; padding-left: 20px;">'
         for row in commands_rows:
@@ -209,47 +214,36 @@ async def admin():
                 background: #0a0a0a; color: #e0e0e0; padding: 20px;
             }}
             .container {{ max-width: 1400px; margin: 0 auto; }}
-            h1 {{ color: #10a37f; margin-bottom: 20px; font-size: 28px; }}
-            h2 {{ color: #10a37f; margin: 20px 0 15px 0; font-size: 20px; border-bottom: 1px solid #2a2a2a; padding-bottom: 8px; }}
+            h1 {{ color: #10a37f; margin-bottom: 20px; }}
+            h2 {{ color: #10a37f; margin: 20px 0 15px 0; border-bottom: 1px solid #2a2a2a; padding-bottom: 8px; }}
             .stats {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }}
-            .stat {{ 
-                background: #1a1a1a; padding: 12px 20px; border-radius: 12px; 
-                border-left: 3px solid #10a37f; font-size: 14px;
-            }}
-            .total-events {{ 
-                background: linear-gradient(135deg, #10a37f20, #0d8c6b10);
-                padding: 12px 20px; border-radius: 12px; margin-bottom: 20px;
-                border: 1px solid #10a37f40;
-            }}
-            .commands-panel {{
-                background: #1a1a1a; padding: 20px; border-radius: 12px; margin-bottom: 20px;
-            }}
+            .stat {{ background: #1a1a1a; padding: 10px 16px; border-radius: 8px; }}
+            .info {{ background: #1a1a1a; padding: 12px 20px; border-radius: 12px; margin-bottom: 20px; }}
             table {{ width: 100%; border-collapse: collapse; background: #0f0f0f; border-radius: 12px; overflow: hidden; }}
             th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #2a2a2a; }}
-            th {{ background: #1a1a1a; color: #10a37f; font-weight: 600; }}
+            th {{ background: #1a1a1a; color: #10a37f; }}
             tr:hover {{ background: #1a1a1a; }}
+            .command-form {{ background: #1a1a1a; padding: 20px; border-radius: 12px; margin-bottom: 20px; }}
             .command-form input, .command-form select {{
                 background: #2a2a2a; color: white; border: 1px solid #3a3a3a;
-                padding: 10px 12px; border-radius: 8px; margin: 5px; font-size: 14px;
+                padding: 10px 12px; border-radius: 8px; margin: 5px;
             }}
-            .command-form input {{ width: 400px; }}
+            .command-form input {{ width: 300px; }}
             .command-form button {{
                 background: #10a37f; color: white; border: none; padding: 10px 20px;
-                border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500;
+                border-radius: 8px; cursor: pointer;
             }}
             .command-form button:hover {{ background: #0d8c6b; }}
-            .clear-btn {{
-                background: #dc2626; margin-left: 10px;
-            }}
+            .clear-btn {{ background: #dc2626; }}
             .clear-btn:hover {{ background: #b91c1c; }}
-            footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #2a2a2a; text-align: center; color: #666; font-size: 12px; }}
+            footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #2a2a2a; text-align: center; color: #666; }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>📊 YAI'ly — Панель управления</h1>
             
-            <div class="total-events">
+            <div class="info">
                 📦 Всего событий: <strong>{total_events}</strong> | 
                 🎮 Активных команд: <strong>{total_commands}</strong>
             </div>
@@ -259,42 +253,34 @@ async def admin():
                 {stats_html}
             </div>
             
-            <h2>🎮 Управление командами</h2>
-            <div class="commands-panel">
-                <div class="command-form">
-                    <form id="commandForm" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
-                        <select name="action" id="action" style="padding: 10px;">
-                            <option value="show_notification">🔔 Уведомление</option>
-                            <option value="block_sites">🚫 Блокировка сайтов</option>
-                            <option value="update_settings">⚙️ Обновить настройки</option>
-                        </select>
-                        <input type="text" name="params" id="params" placeholder='{{"message":"Текст"}}' size="45">
-                        <button type="submit">📤 Отправить</button>
-                        <button type="button" id="clearCommandsBtn" class="clear-btn">🗑️ Очистить все команды</button>
-                    </form>
-                    <div style="margin-top: 10px; font-size: 12px; color: #666;">
-                        💡 Примеры: {{"message":"Привет!"}} | {{"sites":["vk.com"]}} | {{"model":"deepseek/deepseek-v4-flash"}}
-                    </div>
+            <h2>🎮 Отправить команду</h2>
+            <div class="command-form">
+                <form id="commandForm">
+                    <select id="action">
+                        <option value="show_notification">🔔 Уведомление</option>
+                        <option value="block_sites">🚫 Блокировка сайтов</option>
+                        <option value="update_settings">⚙️ Обновить настройки</option>
+                    </select>
+                    <input type="text" id="params" placeholder='{{"message":"Текст"}}' size="40">
+                    <button type="submit">📤 Отправить</button>
+                    <button type="button" id="clearBtn" class="clear-btn">🗑️ Очистить все</button>
+                </form>
+                <div style="margin-top: 10px; font-size: 12px; color: #666;">
+                    💡 Примеры: {{"message":"Привет!"}} | {{"sites":["vk.com"]}} | {{"model":"deepseek/deepseek-v4-flash"}}
                 </div>
-                
-                <h3 style="margin-top: 20px; margin-bottom: 10px;">📋 Активные команды (будут отправлены расширениям):</h3>
-                {commands_html}
             </div>
+            
+            <h2>📋 Активные команды</h2>
+            {commands_html}
             
             <h2>📋 Последние события</h2>
             <div style="overflow-x: auto;">
                 <table>
-                    <thead>
-                        <tr><th>ID</th><th>Время</th><th>Тип</th><th>User ID</th><th>URL</th><th>Данные</th></tr>
-                    </thead>
-                    <tbody>
-                        {events_html}
-                    </tbody>
+                    <thead><tr><th>ID</th><th>Время</th><th>Тип</th><th>User ID</th><th>URL</th><th>Данные</th></tr></thead>
+                    <tbody>{events_html}</tbody>
                 </table>
             </div>
-            <footer>
-                🚀 YAI'ly сервер работает | Refresh для обновления
-            </footer>
+            <footer>🚀 YAI'ly сервер работает | Обнови страницу для просмотра новых данных</footer>
         </div>
         
         <script>
@@ -315,21 +301,16 @@ async def admin():
                     body: JSON.stringify({{action, params}})
                 }});
                 if (response.ok) {{
-                    alert('✅ Команда добавлена! Расширение получит её при следующем опросе (до 30 сек)');
+                    alert('✅ Команда добавлена! Расширение получит её при следующем опросе');
                     document.getElementById('params').value = '';
                     location.reload();
-                }} else {{
-                    alert('❌ Ошибка');
                 }}
             }});
             
-            document.getElementById('clearCommandsBtn').addEventListener('click', async () => {{
+            document.getElementById('clearBtn').addEventListener('click', async () => {{
                 if (confirm('Удалить все команды?')) {{
-                    const response = await fetch('/commands', {{method: 'DELETE'}});
-                    if (response.ok) {{
-                        alert('✅ Все команды удалены');
-                        location.reload();
-                    }}
+                    await fetch('/commands', {{method: 'DELETE'}});
+                    location.reload();
                 }}
             }});
         </script>
@@ -338,14 +319,6 @@ async def admin():
     """
     return html
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def root():
-    return """
-    <html>
-    <head><meta charset="UTF-8"><title>YAI'ly Server</title></head>
-    <body style="font-family: sans-serif; background: #0a0a0a; color: #e0e0e0; text-align: center; padding: 50px;">
-        <h1>🤖 YAI'ly Server</h1>
-        <p>Сервер работает! <a href="/admin" style="color: #10a37f;">Перейти в админку →</a></p>
-    </body>
-    </html>
-    """
+    return {"message": "YAI'ly server is running. Go to /admin for admin panel"}
