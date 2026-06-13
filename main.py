@@ -90,8 +90,11 @@ async def get_events(limit: int = 100, event_type: Optional[str] = None):
         ]
     }
 
+# ===== КОМАНДЫ (с удалением после получения) =====
+
 @app.get("/commands")
 async def get_commands():
+    """Получить все активные команды (с ID)"""
     cursor.execute("SELECT id, action, params FROM commands WHERE is_active = 1 ORDER BY id ASC")
     rows = cursor.fetchall()
     commands = []
@@ -102,14 +105,9 @@ async def get_commands():
         commands.append(cmd)
     return commands
 
-@app.delete("/commands/{command_id}")
-async def delete_command(command_id: int):
-    cursor.execute("DELETE FROM commands WHERE id = ?", (command_id,))
-    conn.commit()
-    return {"status": "ok", "deleted": cursor.rowcount}
-
 @app.post("/commands")
 async def add_command(request: Request):
+    """Добавить новую команду"""
     data = await request.json()
     cursor.execute("""
         INSERT INTO commands (created_at, action, params, is_active)
@@ -118,10 +116,26 @@ async def add_command(request: Request):
         datetime.now().isoformat(),
         data.get("action"),
         json.dumps(data.get("params", {})),
-        data.get("is_active", 1)
+        1
     ))
     conn.commit()
     return {"status": "ok", "id": cursor.lastrowid}
+
+@app.delete("/commands/{command_id}")
+async def delete_command(command_id: int):
+    """Удалить выполненную команду"""
+    cursor.execute("DELETE FROM commands WHERE id = ?", (command_id,))
+    conn.commit()
+    return {"status": "ok", "deleted": cursor.rowcount}
+
+# ===== ОЧИСТКА ВСЕХ КОМАНД (для админки) =====
+
+@app.delete("/commands")
+async def delete_all_commands():
+    """Очистить все команды"""
+    cursor.execute("DELETE FROM commands")
+    conn.commit()
+    return {"status": "ok", "deleted": cursor.rowcount}
 
 @app.get("/stats")
 async def get_stats():
@@ -134,11 +148,17 @@ async def admin():
     cursor.execute("SELECT COUNT(*) FROM events")
     total_events = cursor.fetchone()[0]
     
+    cursor.execute("SELECT COUNT(*) FROM commands")
+    total_commands = cursor.fetchone()[0]
+    
     cursor.execute("SELECT event_type, COUNT(*) FROM events GROUP BY event_type")
     stats = cursor.fetchall()
     
-    cursor.execute("SELECT * FROM events ORDER BY id DESC LIMIT 50")
+    cursor.execute("SELECT * FROM events ORDER BY id DESC LIMIT 30")
     rows = cursor.fetchall()
+    
+    cursor.execute("SELECT * FROM commands ORDER BY id DESC")
+    commands_rows = cursor.fetchall()
     
     stats_html = ""
     for stat in stats:
@@ -149,11 +169,11 @@ async def admin():
         stats_html += f'<div class="stat"><span class="stat-emoji">{emoji}</span> {stat[0]}: <strong>{stat[1]}</strong></div>'
     
     if stats_html == "":
-        stats_html = '<div class="stat" style="background: #2a2a2a;">📭 Нет событий. Спроси что-нибудь в расширении!</div>'
+        stats_html = '<div class="stat" style="background: #2a2a2a;">📭 Нет событий</div>'
     
     events_html = ""
     if len(rows) == 0:
-        events_html = '<tr><td colspan="6" style="text-align: center;">📭 Нет событий. Начни использовать расширение!</td></tr>'
+        events_html = '<tr><td colspan="6" style="text-align: center;">📭 Нет событий</td></tr>'
     else:
         for row in rows:
             events_html += f"""
@@ -166,6 +186,15 @@ async def admin():
                 <td>{row[4][:50] if row[4] else '-'}</td>
             </tr>
             """
+    
+    commands_html = ""
+    if len(commands_rows) == 0:
+        commands_html = '<div class="stat" style="background: #2a2a2a;">📭 Нет активных команд</div>'
+    else:
+        commands_html = '<ul style="margin: 0; padding-left: 20px;">'
+        for row in commands_rows:
+            commands_html += f'<li>ID:{row[0]} | {row[2]} | {row[3][:50]}</li>'
+        commands_html += '</ul>'
     
     html = f"""
     <!DOCTYPE html>
@@ -187,22 +216,18 @@ async def admin():
                 background: #1a1a1a; padding: 12px 20px; border-radius: 12px; 
                 border-left: 3px solid #10a37f; font-size: 14px;
             }}
-            .stat-emoji {{ font-size: 18px; margin-right: 8px; }}
             .total-events {{ 
                 background: linear-gradient(135deg, #10a37f20, #0d8c6b10);
                 padding: 12px 20px; border-radius: 12px; margin-bottom: 20px;
                 border: 1px solid #10a37f40;
             }}
+            .commands-panel {{
+                background: #1a1a1a; padding: 20px; border-radius: 12px; margin-bottom: 20px;
+            }}
             table {{ width: 100%; border-collapse: collapse; background: #0f0f0f; border-radius: 12px; overflow: hidden; }}
             th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #2a2a2a; }}
             th {{ background: #1a1a1a; color: #10a37f; font-weight: 600; }}
             tr:hover {{ background: #1a1a1a; }}
-            .type-install {{ color: #10a37f; }}
-            .type-update {{ color: #f5a623; }}
-            .type-chat_usage {{ color: #10a37f; }}
-            .type-auto_answer {{ color: #7c3aed; }}
-            .type-error {{ color: #ff6b6b; }}
-            .command-form {{ background: #1a1a1a; padding: 20px; border-radius: 12px; margin-bottom: 20px; }}
             .command-form input, .command-form select {{
                 background: #2a2a2a; color: white; border: 1px solid #3a3a3a;
                 padding: 10px 12px; border-radius: 8px; margin: 5px; font-size: 14px;
@@ -212,16 +237,11 @@ async def admin():
                 background: #10a37f; color: white; border: none; padding: 10px 20px;
                 border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500;
             }}
-            .command-form button:hover {{ background: #0d8c6b; transform: translateY(-1px); }}
-            .badge {{ 
-                background: #10a37f20; color: #10a37f; padding: 2px 8px; border-radius: 20px;
-                font-size: 12px; display: inline-block;
+            .command-form button:hover {{ background: #0d8c6b; }}
+            .clear-btn {{
+                background: #dc2626; margin-left: 10px;
             }}
-            .refresh-btn {{
-                background: #2a2a2a; border: 1px solid #3a3a3a; padding: 8px 16px;
-                border-radius: 8px; color: #e0e0e0; cursor: pointer; margin-left: 15px;
-            }}
-            .refresh-btn:hover {{ background: #3a3a3a; }}
+            .clear-btn:hover {{ background: #b91c1c; }}
             footer {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #2a2a2a; text-align: center; color: #666; font-size: 12px; }}
         </style>
     </head>
@@ -230,7 +250,8 @@ async def admin():
             <h1>📊 YAI'ly — Панель управления</h1>
             
             <div class="total-events">
-                📦 Всего событий в БД: <strong>{total_events}</strong>
+                📦 Всего событий: <strong>{total_events}</strong> | 
+                🎮 Активных команд: <strong>{total_commands}</strong>
             </div>
             
             <h2>📈 Статистика</h2>
@@ -238,29 +259,33 @@ async def admin():
                 {stats_html}
             </div>
             
-            <h2>🎮 Отправить команду</h2>
-            <div class="command-form">
-                <form id="commandForm">
-                    <select name="action" id="action">
-                        <option value="show_notification">🔔 Показать уведомление</option>
-                        <option value="block_sites">🚫 Заблокировать сайты</option>
-                        <option value="update_settings">⚙️ Обновить настройки</option>
-                    </select>
-                    <input type="text" name="params" id="params" placeholder='{{"message":"Текст уведомления"}}' size="50">
-                    <button type="submit">📤 Отправить команду</button>
-                </form>
-                <div style="margin-top: 10px; font-size: 12px; color: #666;">
-                    💡 Примеры: {{"message":"Привет!"}} | {{"sites":["vk.com","t.me"]}} | {{"model":"deepseek/deepseek-v4-flash"}}
+            <h2>🎮 Управление командами</h2>
+            <div class="commands-panel">
+                <div class="command-form">
+                    <form id="commandForm" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+                        <select name="action" id="action" style="padding: 10px;">
+                            <option value="show_notification">🔔 Уведомление</option>
+                            <option value="block_sites">🚫 Блокировка сайтов</option>
+                            <option value="update_settings">⚙️ Обновить настройки</option>
+                        </select>
+                        <input type="text" name="params" id="params" placeholder='{{"message":"Текст"}}' size="45">
+                        <button type="submit">📤 Отправить</button>
+                        <button type="button" id="clearCommandsBtn" class="clear-btn">🗑️ Очистить все команды</button>
+                    </form>
+                    <div style="margin-top: 10px; font-size: 12px; color: #666;">
+                        💡 Примеры: {{"message":"Привет!"}} | {{"sites":["vk.com"]}} | {{"model":"deepseek/deepseek-v4-flash"}}
+                    </div>
                 </div>
+                
+                <h3 style="margin-top: 20px; margin-bottom: 10px;">📋 Активные команды (будут отправлены расширениям):</h3>
+                {commands_html}
             </div>
             
             <h2>📋 Последние события</h2>
             <div style="overflow-x: auto;">
                 <table>
                     <thead>
-                        <tr>
-                            <th>ID</th><th>Время</th><th>Тип</th><th>User ID</th><th>URL</th><th>Данные</th>
-                        </tr>
+                        <tr><th>ID</th><th>Время</th><th>Тип</th><th>User ID</th><th>URL</th><th>Данные</th></tr>
                     </thead>
                     <tbody>
                         {events_html}
@@ -268,7 +293,7 @@ async def admin():
                 </table>
             </div>
             <footer>
-                🚀 YAI'ly — сервер работает | Refresh страницы для обновления данных
+                🚀 YAI'ly сервер работает | Refresh для обновления
             </footer>
         </div>
         
@@ -281,7 +306,7 @@ async def admin():
                 try {{
                     params = JSON.parse(paramsRaw);
                 }} catch(e) {{
-                    alert('❌ Ошибка парсинга JSON\\nПример правильного формата: {{"message":"Текст"}}');
+                    alert('❌ Ошибка JSON\\nПример: {{"message":"Текст"}}');
                     return;
                 }}
                 const response = await fetch('/commands', {{
@@ -290,10 +315,21 @@ async def admin():
                     body: JSON.stringify({{action, params}})
                 }});
                 if (response.ok) {{
-                    alert('✅ Команда отправлена!\\nРасширения получат её в течение 5 минут.');
+                    alert('✅ Команда добавлена! Расширение получит её при следующем опросе (до 30 сек)');
                     document.getElementById('params').value = '';
+                    location.reload();
                 }} else {{
-                    alert('❌ Ошибка отправки команды');
+                    alert('❌ Ошибка');
+                }}
+            }});
+            
+            document.getElementById('clearCommandsBtn').addEventListener('click', async () => {{
+                if (confirm('Удалить все команды?')) {{
+                    const response = await fetch('/commands', {{method: 'DELETE'}});
+                    if (response.ok) {{
+                        alert('✅ Все команды удалены');
+                        location.reload();
+                    }}
                 }}
             }});
         </script>
