@@ -92,15 +92,21 @@ async def get_events(limit: int = 100, event_type: Optional[str] = None):
 
 @app.get("/commands")
 async def get_commands():
-    cursor.execute("SELECT action, params FROM commands WHERE is_active = 1 ORDER BY id DESC")
+    cursor.execute("SELECT id, action, params FROM commands WHERE is_active = 1 ORDER BY id ASC")
     rows = cursor.fetchall()
     commands = []
     for row in rows:
-        cmd = {"action": row[0]}
-        if row[1]:
-            cmd.update(json.loads(row[1]))
+        cmd = {"id": row[0], "action": row[1]}
+        if row[2]:
+            cmd.update(json.loads(row[2]))
         commands.append(cmd)
     return commands
+
+@app.delete("/commands/{command_id}")
+async def delete_command(command_id: int):
+    cursor.execute("DELETE FROM commands WHERE id = ?", (command_id,))
+    conn.commit()
+    return {"status": "ok", "deleted": cursor.rowcount}
 
 @app.post("/commands")
 async def add_command(request: Request):
